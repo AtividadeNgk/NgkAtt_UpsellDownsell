@@ -52,14 +52,25 @@ def calcular_datas(dias: int):
     return agora.strftime("%Y-%m-%d %H:%M:%S"), futura.strftime("%Y-%m-%d %H:%M:%S")
 
 async def check_join_request(update: Update, context: CallbackContext):
-    join_request = update.chat_join_request  # Detalhes da solicitação de entrada
+    join_request = update.chat_join_request
     user = join_request.from_user
-    group = manager.get_bot_group(bot_application.bot_data['id'])
-    auth = manager.get_user_expiration(str(user.id), group)
+    chat_id = str(join_request.chat.id)
+    
+    # Pega o grupo principal e o grupo do upsell
+    main_group = manager.get_bot_group(bot_application.bot_data['id'])
+    upsell_config = manager.get_bot_upsell(bot_application.bot_data['id'])
+    upsell_group = upsell_config.get('group_id', '') if upsell_config else ''
+    
+    # Verifica se tem autorização para o grupo específico
+    auth = manager.get_user_expiration(str(user.id), chat_id)
+    
     if auth:
         await join_request.approve()
-        print(f'user aprovado {user.username}')
-        await send_upsell(context, str(user.id))
+        print(f'user aprovado {user.username} no grupo {chat_id}')
+        
+        # Só envia upsell se for o grupo PRINCIPAL
+        if chat_id == main_group:
+            await send_upsell(context, str(user.id))
         
 async def expiration_task():
     print('expiration')
@@ -147,6 +158,17 @@ async def payment_task():
                         admin_list = manager.get_bot_admin(bot_application.bot_data['id'])
                         owner = manager.get_bot_owner(bot_application.bot_data['id'])
                         admin_list.append(owner)
+                        # Notifica admins (para todos os tipos de pagamento)
+                        admin_list = manager.get_bot_admin(bot_application.bot_data['id'])
+                        owner = manager.get_bot_owner(bot_application.bot_data['id'])
+                        admin_list.append(owner)
+                        
+                        # Personaliza o nome do plano para upsell/downsell
+                        if plan.get('is_upsell'):
+                            plan['name'] = f"UPSELL - {plan['name']}"
+                        elif plan.get('is_downsell'):
+                            plan['name'] = f"DOWNSELL - {plan['name']}"
+                            
                         for admin in admin_list:
                             await notificar_admin(user, plan, bot_application, admin)
                         
@@ -188,11 +210,13 @@ async def processar_downsell(update: Update, context: CallbackContext):
         # Aceita o downsell - gera PIX
         await pagar(update, context)
     else:
-        # Recusa o downsell - apenas mensagem de agradecimento
-        await query.message.edit_text(
-            "✅ Tudo certo! Você já tem acesso ao grupo principal.\n"
-            "Aproveite o conteúdo!"
-        )
+            # Recusa o downsell - mensagem final
+            await query.message.edit_text(
+                "✅ Tudo certo! Você já tem acesso ao grupo principal.\n\n"
+                "📱 Verifique suas mensagens anteriores para encontrar o link de acesso.\n"
+                "💬 Qualquer dúvida, use /start\n\n"
+                "Aproveite o conteúdo!"
+            )
 
 async def processar_orderbump(update: Update, context: CallbackContext):
     """Processa a resposta do usuário ao order bump"""
@@ -388,10 +412,22 @@ async def pagar(update: Update, context: CallbackContext):
 
 async def acessar_planos_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Ignora se for callback query (botões)
+        if update.callback_query:
+            return ConversationHandler.END
+            
+        # Ignora se for admin
         if await is_admin(context, update.message.from_user.id):
             return ConversationHandler.END
+            
+        # Ignora se estiver em alguma conversa
+        if context.user_data.get('conv_state'):
+            return ConversationHandler.END
+            
+        # Só mostra planos se for mensagem normal
+        await acessar_planos(update, context)
     except:
-        print('penis')
+        pass
 
 
 async def run_bot(token, bot_id):
